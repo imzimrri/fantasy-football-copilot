@@ -12,8 +12,11 @@ export async function AuthButton() {
   const user = data?.claims;
 
   return user ? (
-    <div className="flex items-center gap-4">
-      Hey, {user.email}!
+    <div className="flex items-center gap-3">
+      {/* The full greeting is one of the widest things in the header — deliberately a
+       *  LATER breakpoint than NavBar's `lg` link row, so the two don't both try to
+       *  claim space at the same width. */}
+      <span className="hidden xl:inline truncate max-w-48">Hey, {user.email}!</span>
       <LogoutButton />
     </div>
   ) : (
