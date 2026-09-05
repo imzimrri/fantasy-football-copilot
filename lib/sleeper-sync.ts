@@ -131,7 +131,13 @@ export async function syncLeague(): Promise<Result<SyncSummary>> {
       full_name: p.full_name ?? "Unknown",
       position: p.position,
       team: p.team,
-      status: p.injury_status ?? p.status ?? null,
+      // `status` here means injury designation (Questionable/Doubtful/Out/IR/etc.) —
+      // the lineup UI renders it as a red injury badge. Sleeper's `injury_status` is
+      // the real signal; `status` on the player object is roster status (Active,
+      // Inactive, Practice Squad, ...) and is null/non-null independent of health, so
+      // falling back to it here previously caused healthy "Active" players to render
+      // with an injury badge. Don't fall back to it.
+      status: p.injury_status ?? null,
     }));
 
     // Upsert in batches — thousands of rows in one call risks payload limits.
