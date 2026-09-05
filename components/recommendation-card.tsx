@@ -56,6 +56,8 @@ function ActionSummary({ recommendation }: { recommendation: Recommendation }) {
     const player = payload.player as string | undefined;
     const action = payload.action as string | undefined;
     if (!player || !action) return null;
+    const comparedTo = payload.comparedTo as string | undefined;
+    const projection = payload.projection as string | undefined;
     const actionLabel: Record<string, string> = {
       start: "Start",
       sit: "Sit",
@@ -63,9 +65,13 @@ function ActionSummary({ recommendation }: { recommendation: Recommendation }) {
       note: "Note",
     };
     return (
-      <p className="text-sm font-medium">
-        {actionLabel[action] ?? action}: {player}
-      </p>
+      <div className="flex flex-col gap-0.5">
+        <p className="text-sm font-medium">
+          {actionLabel[action] ?? action}: {player}
+          {comparedTo && <span className="text-foreground/50"> over {comparedTo}</span>}
+        </p>
+        {projection && <p className="text-xs text-foreground/60">{projection}</p>}
+      </div>
     );
   }
 

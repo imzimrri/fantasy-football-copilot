@@ -22,6 +22,17 @@ const RosterAnalysisOutputSchema = z.object({
         reasoning: z.string(),
         player: z.string().nullish(),
         action: z.enum(["start", "sit", "flag_injury", "note"]).nullish(),
+        // The specific other player this call is weighing against (e.g. the other
+        // FLEX/bench option), when the decision is a head-to-head one. Null when it's
+        // a standalone flag (injury, bye) with no real alternative being compared.
+        comparedTo: z.string().nullish(),
+        // Only populated when the research step actually surfaced a real published
+        // projection/expert ranking for this player this week — never an LLM guess.
+        // Kept as free text (e.g. "14.2 proj pts (FantasyPros)" or "ranked WR22 this
+        // week (ESPN)") rather than a bare number, since sources report this
+        // differently and a bare number would imply false precision/comparability
+        // across sources.
+        projection: z.string().nullish(),
       }),
     )
     .min(1),
@@ -98,7 +109,12 @@ export async function runRosterAnalysis(): Promise<Result<{ recommendationCount:
   const rosterNames = ctx.ownRosterPlayers.map((p) => p.fullName).join(", ");
   const researchResult = await research(
     `Current NFL injury reports, questionable/doubtful statuses, and depth chart ` +
-      `changes this week for these fantasy football players: ${rosterNames}`,
+      `changes this week for these fantasy football players: ${rosterNames}. Also, for ` +
+      `each player, their real NFL opponent this week and how tough that matchup is ` +
+      `(e.g. opponent's run/pass defense ranking), and any published expert fantasy ` +
+      `point projections, rest-of-week rankings, or start/sit consensus calls from ` +
+      `sites like FantasyPros, ESPN, PFF, or NFL.com — especially for players who are ` +
+      `competing for the same lineup spot (e.g. two flex-eligible options).`,
   );
   if (!researchResult.ok) {
     console.warn("[roster-analysis] Perplexity research degraded:", researchResult.error);
@@ -137,6 +153,16 @@ export async function runRosterAnalysis(): Promise<Result<{ recommendationCount:
       "depth-chart position, role, or snap share if it's backed by the research " +
       "provided — do not state a specific depth-chart ranking from memory, since your " +
       "training data may be outdated.\n\n" +
+      "For every spot where two rostered players are realistically competing for the " +
+      "same lineup slot (e.g. two flex-eligible players, a bench player who could " +
+      "start over a struggling starter), make it an explicit head-to-head call: set " +
+      "`comparedTo` to the other player's name and give reasoning that directly " +
+      "compares them — their real NFL opponent this week and how tough that matchup " +
+      "is, not just each player in isolation. Set `projection` ONLY when the research " +
+      "provided a real published projection, ranking, or start/sit consensus for that " +
+      "player this week (quote it plus its source, e.g. \"14.2 proj pts " +
+      "(FantasyPros)\") — never estimate or invent a number yourself; leave it null " +
+      "when the research didn't cover that player.\n\n" +
       "If opponent data is available, also give a matchupOutlook: a " +
       "qualitative confidence read (favorable/toss_up/tough) comparing the two " +
       "rosters' starting lineups for THIS week specifically — positional strength, " +
@@ -153,7 +179,8 @@ export async function runRosterAnalysis(): Promise<Result<{ recommendationCount:
       buildTeamStrategySummary(ctx.teamStrategyNotes) +
       researchContext +
       `\n\nReturn JSON: { "recommendations": [{ "title": string, "reasoning": string, ` +
-      `"player": string, "action": "start"|"sit"|"flag_injury"|"note" }], ` +
+      `"player": string, "action": "start"|"sit"|"flag_injury"|"note", ` +
+      `"comparedTo": string (optional), "projection": string (optional) }], ` +
       `"matchupOutlook": { "confidence": "favorable"|"toss_up"|"tough", "reasoning": string } (optional) }. ` +
       `Cover every borderline start/sit decision and flag any injured/bye players.`,
     schema: RosterAnalysisOutputSchema,
@@ -170,7 +197,7 @@ export async function runRosterAnalysis(): Promise<Result<{ recommendationCount:
       title: r.title,
       reasoning: r.reasoning,
       sources,
-      payload: { player: r.player, action: r.action },
+      payload: { player: r.player, action: r.action, comparedTo: r.comparedTo, projection: r.projection },
     })),
   });
   if (!startSitResult.ok) return startSitResult;
