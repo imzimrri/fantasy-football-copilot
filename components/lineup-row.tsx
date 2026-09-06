@@ -62,6 +62,8 @@ export function LineupRow({
 }) {
   const [open, setOpen] = useState(false);
   const action = recommendation?.payload.action as string | undefined;
+  const comparedTo = recommendation?.payload.comparedTo as string | undefined;
+  const projection = recommendation?.payload.projection as string | undefined;
 
   return (
     <div className="border-b last:border-0">
@@ -84,9 +86,14 @@ export function LineupRow({
           </div>
         </div>
         {recommendation ? (
-          <p className="text-sm font-medium text-right shrink-0 max-w-[40%]">
-            {action ? (ACTION_LABEL[action] ?? action) : recommendation.title}
-          </p>
+          <div className="text-right shrink-0 max-w-[40%]">
+            <p className="text-sm font-medium">
+              {action ? (ACTION_LABEL[action] ?? action) : recommendation.title}
+            </p>
+            {comparedTo && (
+              <p className="text-xs text-foreground/50 truncate">over {comparedTo}</p>
+            )}
+          </div>
         ) : (
           <p className="text-sm text-foreground/50 flex items-center gap-1.5 shrink-0">
             <Check size={14} className="text-emerald-500" />
@@ -106,6 +113,9 @@ export function LineupRow({
           {recommendation && (
             <>
               <p className="text-sm text-foreground/80">{recommendation.reasoning}</p>
+              {projection && (
+                <p className="text-xs font-medium text-foreground/60">{projection}</p>
+              )}
               <SourcesList sources={recommendation.sources} />
             </>
           )}
