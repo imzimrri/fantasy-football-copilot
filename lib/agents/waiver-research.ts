@@ -10,6 +10,7 @@ import {
   loadAgentContext,
   replacePendingRecommendations,
 } from "@/lib/agents/shared";
+import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
 
 /**
  * Builds the output schema dynamically because whether `dropCandidate` is required
@@ -206,7 +207,8 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       `for a ${scoringLabel} league${formatNote}? Focus specifically on under-the-radar ` +
       `players with rising opportunity, snap share, or role who may NOT yet be showing ` +
       `up on widely-publicized trending-add lists — the kind of pickup a manager would ` +
-      `miss if they only looked at raw add counts. Give specific player full names.`,
+      `miss if they only looked at raw add counts. Give specific player full names.` +
+      PREFERRED_SOURCES_NOTE,
   );
 
   if (!discoveryResult.ok) {
@@ -328,7 +330,8 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       `on a watchlist or was surfaced by broader research — what is their current ` +
       `role/opportunity, and their rest-of-season outlook: ${candidateNames}. (2) What ` +
       `is each of these players' CURRENT depth-chart role/snap share on their real ` +
-      `NFL team right now: ${benchNames.join(", ")}.`,
+      `NFL team right now: ${benchNames.join(", ")}.` +
+      PREFERRED_SOURCES_NOTE,
   );
   if (!researchResult.ok) {
     console.warn("[waiver-research] Perplexity research degraded:", researchResult.error);

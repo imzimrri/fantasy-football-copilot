@@ -4,6 +4,7 @@ import { getCurrentFantasyWeek } from "@/lib/sleeper";
 import type { Result } from "@/lib/sleeper";
 import { research } from "@/lib/perplexity";
 import { loadAgentContext, replacePendingRecommendations } from "@/lib/agents/shared";
+import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
 
 const NewsOutputSchema = z.object({
   // Deliberately NOT `.min(1)` — unlike waiver/roster-analysis, "nothing newsworthy
@@ -42,7 +43,8 @@ export async function runNewsMonitoring(): Promise<Result<{ recommendationCount:
     `Any breaking NFL news, injury updates, depth chart changes, role changes, or ` +
       `beat-writer reports from the last 24-48 hours for these fantasy football ` +
       `players: ${allNames}. Only include genuinely new/notable items, not routine ` +
-      `status quo confirmations.`,
+      `status quo confirmations.` +
+      PREFERRED_SOURCES_NOTE,
   );
 
   if (!researchResult.ok) return researchResult;

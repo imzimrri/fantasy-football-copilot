@@ -4,12 +4,14 @@ import { useRef, useState, useTransition } from "react";
 import { Send, Sparkles, Trash2 } from "lucide-react";
 import { clearChat, sendChatMessage } from "@/app/(app)/chat/actions";
 import { Button } from "@/components/ui/button";
+import { SourcesList } from "@/components/sources-list";
 import { cn } from "@/lib/utils";
 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  sources?: { title: string; url: string }[];
 }
 
 /**
@@ -51,7 +53,12 @@ export function ChatPanel({ initialMessages }: { initialMessages: ChatMessage[] 
       }
       setMessages((prev) => [
         ...prev,
-        { id: `assistant-${Date.now()}`, role: "assistant", content: result.reply },
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content: result.reply,
+          sources: result.sources,
+        },
       ]);
       scrollToBottom();
     });
@@ -103,7 +110,7 @@ export function ChatPanel({ initialMessages }: { initialMessages: ChatMessage[] 
         {messages.map((m) => (
           <div
             key={m.id}
-            className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}
+            className={cn("flex flex-col", m.role === "user" ? "items-end" : "items-start")}
           >
             <div
               className={cn(
@@ -115,6 +122,11 @@ export function ChatPanel({ initialMessages }: { initialMessages: ChatMessage[] 
             >
               {m.content}
             </div>
+            {m.role === "assistant" && m.sources && m.sources.length > 0 && (
+              <div className="max-w-[85%] px-1">
+                <SourcesList sources={m.sources} />
+              </div>
+            )}
           </div>
         ))}
         {isPending && (

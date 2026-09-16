@@ -7,7 +7,7 @@ async function ChatContent() {
 
   const { data: rows } = await supabase
     .from("chat_messages")
-    .select("id, role, content")
+    .select("id, role, content, sources")
     .order("created_at", { ascending: true })
     .limit(50);
 
@@ -15,6 +15,7 @@ async function ChatContent() {
     id: r.id as string,
     role: r.role as "user" | "assistant",
     content: r.content as string,
+    sources: (r.sources as { title: string; url: string }[] | null) ?? [],
   }));
 
   return <ChatPanel initialMessages={messages} />;
