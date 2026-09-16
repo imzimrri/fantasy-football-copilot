@@ -33,21 +33,32 @@ async function DashboardContent() {
     .eq("is_own_team", true)
     .maybeSingle();
 
-  const [weekResult, recommendationsResult, playersResult, leagueSettingsResult, notesResult] =
+  // Week must be known BEFORE the recommendations query — matchup/start_sit
+  // recommendations are week-scoped, and without filtering to the current week here,
+  // a prior week's "matchup" (or start_sit) row that's still `status: pending` (never
+  // superseded within its own week+category, never dismissed by the user) would keep
+  // showing on the dashboard as if it were this week's, e.g. still displaying last
+  // week's opponent after the week rolled over.
+  const weekResult = await getCurrentFantasyWeek();
+  const week = weekResult.ok ? weekResult.data : null;
+
+  let recommendationsQuery = supabase
+    .from("recommendations")
+    .select("id, league_id, category, week, title, reasoning, sources, payload, status, created_at")
+    .eq("league_id", league.id)
+    .eq("status", "pending");
+  if (week !== null) {
+    recommendationsQuery = recommendationsQuery.eq("week", week);
+  }
+
+  const [recommendationsResult, playersResult, leagueSettingsResult, notesResult] =
     await Promise.all([
-      getCurrentFantasyWeek(),
-      supabase
-        .from("recommendations")
-        .select("id, league_id, category, week, title, reasoning, sources, payload, status, created_at")
-        .eq("league_id", league.id)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false }),
+      recommendationsQuery.order("created_at", { ascending: false }),
       roster ? loadRosterPlayers(supabase, roster.id) : Promise.resolve(null),
       supabase.from("leagues").select("roster_positions").eq("id", league.id).single(),
       supabase.from("player_notes").select("sleeper_player_id, note"),
     ]);
 
-  const week = weekResult.ok ? weekResult.data : null;
   const recommendations = (recommendationsResult.data ?? []).map(mapRecommendationRow);
   const notes = new Map(
     (notesResult.data ?? []).map((n) => [n.sleeper_player_id as string, n.note as string]),

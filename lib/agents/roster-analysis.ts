@@ -10,6 +10,7 @@ import {
   loadRosterPlayers,
   replacePendingRecommendations,
 } from "@/lib/agents/shared";
+import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
 
 // `.nullish()` (not `.optional()`) on every optional field below — a real bug hit in
 // waiver-research.ts's identical pattern: told to OMIT an optional field, the model
@@ -114,7 +115,8 @@ export async function runRosterAnalysis(): Promise<Result<{ recommendationCount:
       `(e.g. opponent's run/pass defense ranking), and any published expert fantasy ` +
       `point projections, rest-of-week rankings, or start/sit consensus calls from ` +
       `sites like FantasyPros, ESPN, PFF, or NFL.com — especially for players who are ` +
-      `competing for the same lineup spot (e.g. two flex-eligible options).`,
+      `competing for the same lineup spot (e.g. two flex-eligible options).` +
+      PREFERRED_SOURCES_NOTE,
   );
   if (!researchResult.ok) {
     console.warn("[roster-analysis] Perplexity research degraded:", researchResult.error);

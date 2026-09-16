@@ -29,7 +29,7 @@ export async function sendChatMessage(message: string) {
   revalidatePath("/trades");
   revalidatePath("/");
 
-  return { ok: true as const, reply: result.data.reply };
+  return { ok: true as const, reply: result.data.reply, sources: result.data.sources };
 }
 
 /**
