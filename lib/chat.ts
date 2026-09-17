@@ -185,8 +185,12 @@ export async function runChatTurn(
 
   if (!llmResult.ok) return llmResult;
 
+  // Both rows MUST list the same keys: Supabase's bulk insert treats a key present on
+  // one row but absent on another as an explicit NULL for the row missing it (not "use
+  // the column default") — the user row was tripping chat_messages.sources' not-null
+  // constraint until `sources: []` was added here.
   const { error: insertError } = await db.from("chat_messages").insert([
-    { user_id: userId, role: "user", content: message },
+    { user_id: userId, role: "user", content: message, sources: [] },
     { user_id: userId, role: "assistant", content: llmResult.data.reply, sources },
   ]);
   if (insertError) {
