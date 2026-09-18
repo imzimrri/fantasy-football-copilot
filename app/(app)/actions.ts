@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { syncLeague } from "@/lib/sleeper-sync";
+import { loadAgentContext } from "@/lib/agents/shared";
+import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
 
 /**
  * Manual "hard refresh" — pulls the latest roster/matchup/transaction state straight
@@ -19,6 +21,21 @@ import { syncLeague } from "@/lib/sleeper-sync";
 export async function refreshFromSleeper() {
   const result = await syncLeague();
   if (!result.ok) return { ok: false as const, error: result.error };
+
+  // Best-effort: clear any pending waiver recommendation for a player who's now
+  // actually on the roster (per the just-synced data), so a suggestion the user
+  // already acted on doesn't keep sitting there until tomorrow's cron. Never fails
+  // the refresh itself — a stale card lingering an extra day is a UI nuisance, not a
+  // reason to report the sync as failed.
+  const ctxResult = await loadAgentContext();
+  if (ctxResult.ok) {
+    await resolveStaleWaiverRecommendations(
+      ctxResult.data.db,
+      ctxResult.data.userId,
+      ctxResult.data.leagueId,
+      ctxResult.data.ownRosterPlayers.map((p) => p.fullName),
+    );
+  }
 
   revalidatePath("/");
   revalidatePath("/roster");

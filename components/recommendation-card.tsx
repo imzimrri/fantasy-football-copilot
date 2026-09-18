@@ -38,17 +38,21 @@ function ActionSummary({ recommendation }: { recommendation: Recommendation }) {
   if (category === "waiver") {
     const addPlayer = payload.addPlayer as string | undefined;
     const dropCandidate = payload.dropCandidate as string | undefined;
+    const usageStats = payload.usageStats as string | undefined;
     if (!addPlayer) return null;
     return (
-      <p className="text-sm font-medium flex items-center gap-1.5 flex-wrap">
-        <span className="text-green-600 dark:text-green-500">Add {addPlayer}</span>
-        {dropCandidate && (
-          <>
-            <ArrowRight size={14} className="text-foreground/40" />
-            <span className="text-red-600 dark:text-red-500">Drop {dropCandidate}</span>
-          </>
-        )}
-      </p>
+      <div className="flex flex-col gap-0.5">
+        <p className="text-sm font-medium flex items-center gap-1.5 flex-wrap">
+          <span className="text-green-600 dark:text-green-500">Add {addPlayer}</span>
+          {dropCandidate && (
+            <>
+              <ArrowRight size={14} className="text-foreground/40" />
+              <span className="text-red-600 dark:text-red-500">Drop {dropCandidate}</span>
+            </>
+          )}
+        </p>
+        {usageStats && <p className="text-xs text-foreground/60">{usageStats}</p>}
+      </div>
     );
   }
 

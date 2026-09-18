@@ -11,6 +11,7 @@ import {
   replacePendingRecommendations,
 } from "@/lib/agents/shared";
 import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
+import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
 
 /**
  * Builds the output schema dynamically because whether `dropCandidate` is required
@@ -38,6 +39,12 @@ function buildWaiverOutputSchema(rosterIsFull: boolean) {
           restOfSeasonOutlook: z.string().nullish(),
           addPlayer: z.string().nullish(),
           dropCandidate: z.string().nullish(),
+          // Only populated when the research actually surfaced a real usage stat for
+          // addPlayer (target share, snap %, red-zone touches, carries, etc.) — never
+          // an LLM guess. Free text with its source, not a bare number (see
+          // roster-analysis.ts's `projection` field for the same reasoning) — e.g.
+          // "78% snap share, 6 targets/gm last 3 wks (FantasyPros)".
+          usageStats: z.string().nullish(),
         }),
       )
       .min(1)
@@ -80,6 +87,17 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
   const contextResult = await loadAgentContext();
   if (!contextResult.ok) return contextResult;
   const ctx = contextResult.data;
+
+  // Defense in depth (see resolveStaleWaiverRecommendations doc comment) — the manual
+  // refresh button already does this right after a sync, but this covers the plain
+  // daily-cron path too, in case a real move happened without the user ever hitting
+  // refresh.
+  await resolveStaleWaiverRecommendations(
+    ctx.db,
+    ctx.userId,
+    ctx.leagueId,
+    ctx.ownRosterPlayers.map((p) => p.fullName),
+  );
 
   const weekResult = await getCurrentFantasyWeek();
   if (!weekResult.ok) return weekResult;
@@ -328,9 +346,12 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
     `For fantasy football: (1) Why are these NFL players trending in adds right now, ` +
       `or — for anyone on this list who ISN'T currently trending but is being tracked ` +
       `on a watchlist or was surfaced by broader research — what is their current ` +
-      `role/opportunity, and their rest-of-season outlook: ${candidateNames}. (2) What ` +
-      `is each of these players' CURRENT depth-chart role/snap share on their real ` +
-      `NFL team right now: ${benchNames.join(", ")}.` +
+      `role/opportunity, and their rest-of-season outlook: ${candidateNames}. Include ` +
+      `real usage numbers where available — snap share, target share, carries/gm, ` +
+      `red-zone touches, air yards — not just a qualitative read, since hard usage ` +
+      `data is a better predictor of holding value than buzz alone. (2) What is each ` +
+      `of these players' CURRENT depth-chart role/snap share on their real NFL team ` +
+      `right now: ${benchNames.join(", ")}.` +
       PREFERRED_SOURCES_NOTE,
   );
   if (!researchResult.ok) {
@@ -419,6 +440,11 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       "player's current role, say so explicitly or speak in general terms — do NOT " +
       "state a specific depth-chart ranking from memory, since your training data " +
       "may be outdated and a wrong claim here misleads a real roster decision.\n\n" +
+      "When you recommend an add, set `usageStats` to the real usage numbers the " +
+      "research gave you for that player (snap %, target share, carries/gm, red-zone " +
+      "touches, etc.) plus their source — this is what separates a grounded pickup " +
+      "from a hype-driven one. Leave it null if the research didn't cover hard usage " +
+      "numbers for that specific player — never estimate or invent one.\n\n" +
       "The user may have written their own reasoning for holding specific players " +
       "(e.g. a backup QB they're stashing as a handcuff), or told you they're OPEN " +
       "to dropping or trading someone. Both are signal, not just context to " +
@@ -460,7 +486,7 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       `\n\nReturn JSON: { "recommendations": [{ "title": string, "reasoning": string, ` +
       `"restOfSeasonOutlook": string (required when addPlayer is present), ` +
       `"addPlayer": string (optional — omit for a pure note response), ` +
-      `"dropCandidate": string (optional) }] }. ` +
+      `"dropCandidate": string (optional), "usageStats": string (optional) }] }. ` +
       `Rank by fit for my roster, not just raw popularity.`,
     schema: buildWaiverOutputSchema(rosterIsFull),
   });
@@ -490,6 +516,7 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
           ...(r.addPlayer ? { addPlayer: r.addPlayer } : {}),
           ...(finalDrop ? { dropCandidate: finalDrop, dropCandidateVerified: resolvedDrop !== null } : {}),
           ...(r.restOfSeasonOutlook ? { restOfSeasonOutlook: r.restOfSeasonOutlook } : {}),
+          ...(r.usageStats ? { usageStats: r.usageStats } : {}),
         },
       };
     }),

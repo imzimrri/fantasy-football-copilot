@@ -4,6 +4,41 @@ import type { Result } from "@/lib/sleeper";
 import { fuzzyMatchName } from "@/lib/fuzzy-match";
 import { cacheKey, getCached, setCached } from "@/lib/cache";
 
+/**
+ * Self-heals stale "add X" waiver recommendations: once X is actually on the user's
+ * roster — whether they followed the suggestion exactly or made the move some other
+ * way — the recommendation is moot and should stop showing as pending. Without this,
+ * a pending waiver recommendation only clears via `findMatchingWaiverRecommendation`
+ * catching the exact Sleeper transaction during sync (which requires the transaction
+ * to have actually settled — a waiver claim doesn't process until the league's
+ * waiver time), or via the next daily waiver-research run wholesale-replacing that
+ * week's batch — up to 24h of showing a recommendation the user already acted on.
+ * Called after every roster sync (manual refresh AND the daily cron, before
+ * generating a fresh batch) so this clears as soon as the roster data does.
+ */
+export async function resolveStaleWaiverRecommendations(
+  db: SupabaseClient,
+  userId: string,
+  leagueId: string,
+  currentRosterNames: string[],
+): Promise<void> {
+  const { data: pending } = await db
+    .from("recommendations")
+    .select("id, payload")
+    .eq("user_id", userId)
+    .eq("league_id", leagueId)
+    .eq("category", "waiver")
+    .eq("status", "pending");
+
+  for (const rec of pending ?? []) {
+    const addPlayer = (rec.payload as Record<string, unknown>).addPlayer as string | undefined;
+    if (!addPlayer) continue;
+    if (fuzzyMatchName(addPlayer, currentRosterNames)) {
+      await db.from("recommendations").update({ status: "followed" }).eq("id", rec.id);
+    }
+  }
+}
+
 const STATS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — matches the rest of lib/cache.ts's callers.
 
 /**
