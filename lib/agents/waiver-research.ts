@@ -11,6 +11,7 @@ import {
   replacePendingRecommendations,
 } from "@/lib/agents/shared";
 import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
+import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
 
 /**
  * Builds the output schema dynamically because whether `dropCandidate` is required
@@ -80,6 +81,17 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
   const contextResult = await loadAgentContext();
   if (!contextResult.ok) return contextResult;
   const ctx = contextResult.data;
+
+  // Defense in depth (see resolveStaleWaiverRecommendations doc comment) — the manual
+  // refresh button already does this right after a sync, but this covers the plain
+  // daily-cron path too, in case a real move happened without the user ever hitting
+  // refresh.
+  await resolveStaleWaiverRecommendations(
+    ctx.db,
+    ctx.userId,
+    ctx.leagueId,
+    ctx.ownRosterPlayers.map((p) => p.fullName),
+  );
 
   const weekResult = await getCurrentFantasyWeek();
   if (!weekResult.ok) return weekResult;
