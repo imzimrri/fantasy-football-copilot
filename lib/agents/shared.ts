@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient, getAppUserId } from "@/lib/supabase/service";
+import { getTrendingPlayers } from "@/lib/sleeper";
 import type { Result } from "@/lib/sleeper";
 
 export interface AgentPlayer {
@@ -309,4 +310,83 @@ export async function replacePendingRecommendations(
   }
 
   return { ok: true, data: args.rows.length };
+}
+
+export interface AvailablePlayer {
+  sleeperPlayerId: string;
+  fullName: string;
+  position: string | null;
+  team: string | null;
+  status: string | null;
+  trendingAddCount: number;
+}
+
+/**
+ * Sleeper's platform-wide trending-add list, filtered down to players actually
+ * unrostered in THIS league — real, currently-available free agents, not yet reasoned
+ * about by an LLM. Shared by waiver-research (one input into its full candidate
+ * pipeline) and chat — so "is there anyone better than my bench guy" always has real
+ * names/positions to compare against, not just whatever waiver-research's own
+ * opinionated batch happened to recommend that day. That batch can legitimately be
+ * empty (quality bar not cleared) even when real available players exist — this
+ * function answers "who's out there," independent of whether anyone judged them
+ * worth a full add/drop commitment.
+ */
+export async function loadAvailableTrendingPlayers(
+  db: SupabaseClient,
+  leagueId: string,
+  limit = 25,
+): Promise<Result<AvailablePlayer[]>> {
+  const trendingResult = await getTrendingPlayers("add", 24, limit);
+  if (!trendingResult.ok) return trendingResult;
+
+  const { data: leagueRosterIds, error: rosterIdsError } = await db
+    .from("rosters")
+    .select("id")
+    .eq("league_id", leagueId);
+  if (rosterIdsError) {
+    return { ok: false, error: `Failed to load league rosters: ${rosterIdsError.message}` };
+  }
+
+  const candidateIds = trendingResult.data.map((t) => t.player_id);
+  const { data: rosteredRows, error: rosteredError } = await db
+    .from("roster_players")
+    .select("sleeper_player_id")
+    .in("sleeper_player_id", candidateIds)
+    .in("roster_id", (leagueRosterIds ?? []).map((r) => r.id));
+  if (rosteredError) {
+    return { ok: false, error: `Failed to check rostered players: ${rosteredError.message}` };
+  }
+
+  const rosteredIds = new Set((rosteredRows ?? []).map((r) => r.sleeper_player_id as string));
+  const available = trendingResult.data.filter((t) => !rosteredIds.has(t.player_id));
+
+  const { data: playerInfoRows, error: playerInfoError } = await db
+    .from("players")
+    .select("sleeper_player_id, full_name, position, team, status")
+    .in(
+      "sleeper_player_id",
+      available.map((t) => t.player_id),
+    );
+  if (playerInfoError) {
+    return { ok: false, error: `Failed to load player info: ${playerInfoError.message}` };
+  }
+  const infoById = new Map((playerInfoRows ?? []).map((p) => [p.sleeper_player_id, p]));
+
+  const result: AvailablePlayer[] = available
+    .map((t) => {
+      const info = infoById.get(t.player_id);
+      if (!info) return null;
+      return {
+        sleeperPlayerId: t.player_id,
+        fullName: info.full_name as string,
+        position: info.position as string | null,
+        team: info.team as string | null,
+        status: info.status as string | null,
+        trendingAddCount: t.count,
+      };
+    })
+    .filter((p): p is AvailablePlayer => p !== null);
+
+  return { ok: true, data: result };
 }

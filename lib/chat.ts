@@ -5,13 +5,27 @@ import { getCurrentFantasyWeek } from "@/lib/sleeper";
 import type { Result } from "@/lib/sleeper";
 import { research, type ResearchSource } from "@/lib/perplexity";
 import { fuzzyMatchName } from "@/lib/fuzzy-match";
-import { buildTeamStrategySummary, loadLeagueRosterContext } from "@/lib/agents/shared";
+import {
+  buildTeamStrategySummary,
+  loadAvailableTrendingPlayers,
+  loadLeagueRosterContext,
+} from "@/lib/agents/shared";
 import { PREFERRED_SOURCES_NOTE } from "@/lib/agents/preferred-sources";
 
 const CHAT_HISTORY_LIMIT = 20;
 // How many of this week's already-computed waiver/news recommendations to fold into
 // chat context — enough to actually be useful, capped so the prompt doesn't balloon.
 const RECOMMENDATION_CONTEXT_LIMIT = 8;
+// Every other agent in this app defaults to the cheap model (fine for high-frequency,
+// narrowly-scoped cron tasks). Chat is different: low-frequency, user-facing, and has
+// to juggle a lot of context at once (roster, notes, watchlist, live research, history)
+// while strictly obeying grounding rules — real complaints of it losing track of the
+// roster or giving generic advice led to bumping it specifically. Only takes effect
+// when Anthropic is the configured provider — an OpenRouter-only setup keeps using
+// OPENROUTER_MODEL as before, since "claude-sonnet-5" isn't a valid OpenRouter slug.
+const CHAT_MODEL =
+  process.env.ANTHROPIC_CHAT_MODEL ||
+  (process.env.ANTHROPIC_API_KEY ? "claude-sonnet-5" : undefined);
 
 // `.nullish()` not `.optional()` on the two optional top-level fields — see
 // waiver-research.ts's buildWaiverOutputSchema comment: models sometimes write
@@ -83,6 +97,25 @@ export async function runChatTurn(
     .map((r) => `${r.title}: ${r.reasoning}`)
     .join("\n");
 
+  // The RAW available free-agent list (Sleeper trending-add, filtered to unrostered in
+  // this league) — not just waiver-research's own opinionated picks above, which can
+  // legitimately be empty on a day nothing cleared its "worth a full add/drop" bar.
+  // Without this, "is anyone on the wire better than my bench guy" had nothing real to
+  // compare against on those days. Best-effort: degrades to just the pre-computed
+  // recommendations above if Sleeper's trending endpoint is unavailable.
+  const availableResult = await loadAvailableTrendingPlayers(db, ctx.leagueId, 40);
+  const availableSummary = availableResult.ok
+    ? availableResult.data
+        .map(
+          (p) =>
+            `${p.fullName} — ${p.position ?? "?"} ${p.team ?? "FA"}${p.status ? ` — status: ${p.status}` : ""} — added by ${p.trendingAddCount} teams (24h)`,
+        )
+        .join("\n")
+    : "";
+  if (!availableResult.ok) {
+    console.warn("[chat] Available-players lookup degraded:", availableResult.error);
+  }
+
   // Live, question-specific research — same Perplexity search grounding every other
   // agent uses, but run fresh against the user's ACTUAL message so the chat can answer
   // like a direct Perplexity query, not just recite pre-computed cron output.
@@ -91,7 +124,9 @@ export async function runChatTurn(
     `Fantasy football question from a manager in a Superflex/2QB league: "${message}". ` +
       `Their roster: ${ctx.ownRosterPlayers.map((p) => p.fullName).join(", ")}. Give ` +
       `current, specific, real information relevant to answering this — recent news, ` +
-      `depth chart/role, matchup context, or waiver-wire opinion, whichever applies.` +
+      `depth chart/role, matchup context, or waiver-wire opinion, whichever applies. ` +
+      `If this concerns a rookie, include their college production/draft capital as ` +
+      `context for projecting their NFL role.` +
       PREFERRED_SOURCES_NOTE,
   );
   if (!researchResult.ok) {
@@ -143,19 +178,42 @@ export async function runChatTurn(
       : "";
 
   const llmResult = await generateJSON({
+    model: CHAT_MODEL,
     system:
-      "You are the user's fantasy football copilot for their Superflex/2QB league. " +
+      "You are the user's fantasy football copilot for their Superflex/2QB league.\n\n" +
+      "GROUNDING — READ THIS FIRST, EVERY TURN: the 'My roster' list below is the " +
+      "user's ACTUAL, COMPLETE roster right now. Before saying anything about who they " +
+      "have, who's a starter vs bench, or who's injured, re-read that list — it is not " +
+      "optional background, it is the literal answer to 'who's on my team.' Never say " +
+      "you don't know who's on their roster, never guess, and never answer a roster " +
+      "question in generic terms when the actual list is right there. Same for the " +
+      "'Available free agents' list — that's who is REALLY available to add in this " +
+      "league right now; never invent a free agent or claim someone's available " +
+      "without checking that list or the live research.\n\n" +
+      "NEVER suggest dropping a clear roster cornerstone (a starter at a scarce " +
+      "position, a top-tier producer, anyone the roster list or research shows is " +
+      "clearly outperforming the alternatives) for a speculative waiver flier — a drop " +
+      "suggestion needs a real, specific reason the ADD is genuinely better (role, " +
+      "opportunity, matchup, injury to someone ahead of them), not just 'there's " +
+      "someone new available.' If nothing on the wire actually clears that bar, say so " +
+      "plainly instead of manufacturing a move.\n\n" +
+      "'Is anyone on the wire better than my bench guy' is a core use case — when asked " +
+      "this (or asked about a bench/injured player generally), explicitly compare the " +
+      "specific bench player against same-position options in the 'Available free " +
+      "agents' list and the live research, using real usage/role signals (snap share, " +
+      "target share, depth-chart role) where given — a real comparison with a clear " +
+      "verdict, not a vague 'worth monitoring.'\n\n" +
       "Answer questions and take directives about their team conversationally, " +
-      "grounded in the real roster/notes/watchlist, this week's already-computed " +
-      "waiver-wire and news recommendations, and the live research given below — " +
-      "never invent players or claim a specific depth-chart fact you weren't given. " +
-      "The live research is a real web search run specifically for this message, so " +
-      "prefer it over your own general knowledge for anything current (news, rankings, " +
-      "waiver opinions) — this is what makes you actually useful for 'who should I " +
-      "add', 'what's the news on X', or 'who should I start' questions, not just a " +
-      "roster Q&A. If asked why to keep or drop a player, give a real, specific reason " +
-      "tied to their actual roster construction (position depth, bye weeks, injury " +
-      "status, Superflex QB value) or the research provided, not a generic platitude.\n\n" +
+      "grounded in the real roster/notes/watchlist/available-players data and this " +
+      "week's already-computed waiver-wire and news recommendations below, plus the " +
+      "live research — never invent players or claim a specific depth-chart fact you " +
+      "weren't given. The live research is a real web search run specifically for this " +
+      "message, so prefer it over your own general knowledge for anything current " +
+      "(news, rankings, waiver opinions, and — for a rookie — their college production " +
+      "as context for projecting NFL role). If asked why to keep or drop a player, give " +
+      "a real, specific reason tied to their actual roster construction (position " +
+      "depth, bye weeks, injury status, Superflex QB value) or the research provided, " +
+      "not a generic platitude.\n\n" +
       "When the user states a preference about ONE SPECIFIC player (e.g. 'I'm OK " +
       "trading Andrews', 'drop Fields', 'I'm on the fence about Merritt unless you " +
       "give me a good reason to keep him'), record it via playerNoteUpdates — the " +
@@ -169,10 +227,11 @@ export async function runChatTurn(
       "so it must be self-contained, not a fragment referring back to this " +
       "conversation.",
     prompt:
-      `My roster:\n${rosterSummary}` +
+      `My roster (COMPLETE — this is everyone they have, nothing omitted):\n${rosterSummary}` +
       notesSummary +
       buildTeamStrategySummary(ctx.teamStrategyNotes) +
       watchlistSummary +
+      (availableSummary ? `\n\nAvailable free agents (real-time, trending adds not on any roster in this league):\n${availableSummary}` : "") +
       (waiverSummary ? `\n\nThis week's waiver-wire recommendations:\n${waiverSummary}` : "") +
       (newsSummary ? `\n\nThis week's news items:\n${newsSummary}` : "") +
       liveResearchContext +
