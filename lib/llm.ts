@@ -64,7 +64,19 @@ async function callAnthropic(opts: GenerateOptions): Promise<Result<string>> {
     });
     const textBlock = message.content.find((block) => block.type === "text");
     if (!textBlock || textBlock.type !== "text") {
-      return { ok: false, error: "Anthropic response contained no text block" };
+      // Real bug hit live: a large prompt (chat's roster+notes+waiver+news+research+
+      // history context) combined with maxTokens too small for the model's actual
+      // response cut the completion off before any text block was written — the
+      // content array held only a partial/other block type. stop_reason and the
+      // block types actually present are the fastest way to tell that apart from a
+      // genuine empty response.
+      const blockTypes = message.content.map((block) => block.type).join(", ") || "none";
+      return {
+        ok: false,
+        error:
+          `Anthropic response contained no text block (stop_reason: ${message.stop_reason}, ` +
+          `blocks: [${blockTypes}]) — likely maxTokens too low for this prompt/model`,
+      };
     }
     return { ok: true, data: textBlock.text };
   } catch (e) {
