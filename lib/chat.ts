@@ -179,6 +179,12 @@ export async function runChatTurn(
 
   const llmResult = await generateJSON({
     model: CHAT_MODEL,
+    // Default (2048) was tuned for the other agents' narrower prompts — chat's is by
+    // far the largest (roster/notes/watchlist/available-players/waiver/news/live-
+    // research/history all at once) and a stronger model's reply tends to run longer
+    // too. Too small a budget truncates the response before any text is written at
+    // all (see the "no text block" error in lib/llm.ts).
+    maxTokens: 4096,
     system:
       "You are the user's fantasy football copilot for their Superflex/2QB league.\n\n" +
       "GROUNDING — READ THIS FIRST, EVERY TURN: the 'My roster' list below is the " +
