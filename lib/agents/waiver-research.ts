@@ -225,7 +225,8 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       `for a ${scoringLabel} league${formatNote}? Focus specifically on under-the-radar ` +
       `players with rising opportunity, snap share, or role who may NOT yet be showing ` +
       `up on widely-publicized trending-add lists — the kind of pickup a manager would ` +
-      `miss if they only looked at raw add counts. Give specific player full names.` +
+      `miss if they only looked at raw add counts. Give specific player full names. For ` +
+      `any rookie, include their college production/draft capital as context.` +
       PREFERRED_SOURCES_NOTE,
   );
 
@@ -351,7 +352,8 @@ export async function runWaiverResearch(): Promise<Result<{ recommendationCount:
       `red-zone touches, air yards — not just a qualitative read, since hard usage ` +
       `data is a better predictor of holding value than buzz alone. (2) What is each ` +
       `of these players' CURRENT depth-chart role/snap share on their real NFL team ` +
-      `right now: ${benchNames.join(", ")}.` +
+      `right now: ${benchNames.join(", ")}. (3) For any rookie in either list, their ` +
+      `college production and draft capital as context for their NFL role.` +
       PREFERRED_SOURCES_NOTE,
   );
   if (!researchResult.ok) {
