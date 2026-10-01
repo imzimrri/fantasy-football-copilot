@@ -143,6 +143,55 @@ export async function generateText(opts: GenerateOptions): Promise<Result<string
 }
 
 /**
+ * Escapes raw control characters (a literal newline, tab, or carriage return typed
+ * directly into the text) found INSIDE a JSON string literal — illegal per the JSON
+ * spec, but models reliably produce them in a multi-paragraph field (chat's `reply`
+ * especially) despite being told to return raw JSON. Real bug hit live: a long,
+ * multi-line chat reply with actual newline characters inside the "reply" string
+ * failed `JSON.parse` with "Bad control character in string literal." Tracks string
+ * state by toggling on unescaped double quotes so structural whitespace BETWEEN JSON
+ * tokens (always legal) is left untouched — only a control character the parser
+ * would reject while inside a string gets rewritten.
+ */
+export function escapeControlCharactersInStrings(text: string): string {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (!inString) {
+      if (ch === '"') inString = true;
+      result += ch;
+      continue;
+    }
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = false;
+      result += ch;
+      continue;
+    }
+    if (ch.charCodeAt(0) < 0x20) {
+      if (ch === "\n") result += "\\n";
+      else if (ch === "\r") result += "\\r";
+      else if (ch === "\t") result += "\\t";
+      // else: drop other stray control characters — not valid JSON and not worth a
+      // specific escape, vs. failing the whole parse over one odd character.
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+
+/**
  * Parses raw LLM text as JSON and validates it against `schema`. Pure/no I/O — split
  * out from `generateJSON` specifically so it's unit-testable without mocking an SDK.
  * Strips a markdown code fence if the model wrapped its JSON in one despite instructions.
@@ -154,7 +203,8 @@ export function parseAndValidateJson<T>(
   let parsed: unknown;
   try {
     const cleaned = text.trim().replace(/^```(?:json)?\n?|\n?```$/g, "");
-    parsed = JSON.parse(cleaned);
+    const sanitized = escapeControlCharactersInStrings(cleaned);
+    parsed = JSON.parse(sanitized);
   } catch (e) {
     return { ok: false, error: `LLM response was not valid JSON: ${String(e)}` };
   }
