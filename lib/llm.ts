@@ -143,21 +143,35 @@ export async function generateText(opts: GenerateOptions): Promise<Result<string
 }
 
 /**
- * Escapes raw control characters (a literal newline, tab, or carriage return typed
- * directly into the text) found INSIDE a JSON string literal — illegal per the JSON
- * spec, but models reliably produce them in a multi-paragraph field (chat's `reply`
- * especially) despite being told to return raw JSON. Real bug hit live: a long,
- * multi-line chat reply with actual newline characters inside the "reply" string
- * failed `JSON.parse` with "Bad control character in string literal." Tracks string
- * state by toggling on unescaped double quotes so structural whitespace BETWEEN JSON
- * tokens (always legal) is left untouched — only a control character the parser
- * would reject while inside a string gets rewritten.
+ * Repairs common ways a model's "JSON" fails strict `JSON.parse` despite being told
+ * to return only JSON — both reliably show up in a long, prose-heavy field (chat's
+ * multi-paragraph `reply` especially), not in the simpler fields every other agent
+ * writes:
+ *
+ * 1. A raw control character (a literal newline/tab/carriage-return byte typed
+ *    directly into the text instead of escaped) inside a string value — illegal per
+ *    the JSON spec. Real bug hit live: "Bad control character in string literal."
+ * 2. A literal `"` INSIDE a string's own content that the model forgot to escape as
+ *    `\"` (quoting a nickname, a stat label, etc.) — this makes a naive parser treat
+ *    it as the string's end, then fail on whatever comes after, which is what
+ *    produced the next bug hit live: "Unterminated string in JSON" far later in the
+ *    text, from the SAME root cause (an earlier stray quote, not a truncated
+ *    response).
+ *
+ * Tracks string state by toggling on quotes, but for case 2 specifically: before
+ * treating a `"` as the REAL end of a string, look ahead past any whitespace for a
+ * structural character that legally follows a JSON string (`,` `}` `]` `:`, or end of
+ * input). If what follows isn't one of those, this wasn't a real closing quote —
+ * escape it and stay inside the string instead. This is the same heuristic
+ * JSON-repair tooling generally uses; it isn't foolproof against every pathological
+ * case, but it fixes exactly the shape of mistake a model actually makes here.
  */
-export function escapeControlCharactersInStrings(text: string): string {
+export function repairLlmJsonText(text: string): string {
   let result = "";
   let inString = false;
   let escaped = false;
-  for (const ch of text) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (!inString) {
       if (ch === '"') inString = true;
       result += ch;
@@ -174,8 +188,16 @@ export function escapeControlCharactersInStrings(text: string): string {
       continue;
     }
     if (ch === '"') {
-      inString = false;
-      result += ch;
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      const next = text[j];
+      const isRealEnd = next === undefined || ",}]:".includes(next);
+      if (isRealEnd) {
+        inString = false;
+        result += ch;
+      } else {
+        result += '\\"';
+      }
       continue;
     }
     if (ch.charCodeAt(0) < 0x20) {
@@ -203,7 +225,7 @@ export function parseAndValidateJson<T>(
   let parsed: unknown;
   try {
     const cleaned = text.trim().replace(/^```(?:json)?\n?|\n?```$/g, "");
-    const sanitized = escapeControlCharactersInStrings(cleaned);
+    const sanitized = repairLlmJsonText(cleaned);
     parsed = JSON.parse(sanitized);
   } catch (e) {
     return { ok: false, error: `LLM response was not valid JSON: ${String(e)}` };
@@ -228,7 +250,12 @@ export function parseAndValidateJson<T>(
 export async function generateJSON<T>(
   opts: GenerateOptions & { schema: z.ZodType<T> },
 ): Promise<Result<T>> {
-  const jsonSystem = `${opts.system}\n\nRespond with ONLY valid JSON — no prose, no markdown code fences, no explanation outside the JSON structure.`;
+  const jsonSystem =
+    `${opts.system}\n\nRespond with ONLY valid JSON — no prose, no markdown code ` +
+    `fences, no explanation outside the JSON structure. Inside every string value, " ` +
+    `must be escaped as \\" and a real line break must be written as \\n — never a ` +
+    `literal unescaped quote or newline character, even when quoting a word/stat or ` +
+    `writing a multi-paragraph answer.`;
   const textResult = await generateText({ ...opts, system: jsonSystem });
   if (!textResult.ok) return textResult;
   return parseAndValidateJson(textResult.data, opts.schema);
