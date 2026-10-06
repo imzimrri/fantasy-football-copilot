@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { escapeControlCharactersInStrings, parseAndValidateJson } from "@/lib/llm";
+import { repairLlmJsonText, parseAndValidateJson } from "@/lib/llm";
 
 const schema = z.object({
   recommendations: z.array(z.object({ title: z.string(), reasoning: z.string() })),
@@ -61,30 +61,62 @@ describe("parseAndValidateJson", () => {
       expect(result.data.recommendations[0].reasoning).toBe("Line one.\nLine two.");
     }
   });
+
+  it("tolerates a stray unescaped quote inside a string value (real bug: \"Unterminated string\")", () => {
+    // Deliberately malformed the way a model actually produces it: a literal "
+    // quoting a word inside the reasoning text, not escaped as \" — a naive parser
+    // treats it as the string's end and then fails later with "Unterminated string."
+    const broken =
+      '{"recommendations": [{"title": "Start X", "reasoning": "He is basically a "WR2" now."}]}';
+    const result = parseAndValidateJson(broken, schema);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.recommendations[0].reasoning).toBe('He is basically a "WR2" now.');
+    }
+  });
+
+  it("tolerates a stray quote immediately followed by a real structural character", () => {
+    const broken =
+      '{"recommendations": [{"title": "Start X", "reasoning": "He said "no," then changed his mind."}]}';
+    const result = parseAndValidateJson(broken, schema);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.recommendations[0].reasoning).toBe(
+        'He said "no," then changed his mind.',
+      );
+    }
+  });
 });
 
-describe("escapeControlCharactersInStrings", () => {
+describe("repairLlmJsonText", () => {
   it("escapes a raw newline/tab/carriage-return inside a string", () => {
     const input = '{"a": "one\ntwo\tthree\rfour"}';
-    expect(escapeControlCharactersInStrings(input)).toBe(
-      '{"a": "one\\ntwo\\tthree\\rfour"}',
-    );
+    expect(repairLlmJsonText(input)).toBe('{"a": "one\\ntwo\\tthree\\rfour"}');
   });
 
   it("leaves structural whitespace between tokens untouched", () => {
     const input = '{\n  "a": "b"\n}';
-    expect(escapeControlCharactersInStrings(input)).toBe(input);
+    expect(repairLlmJsonText(input)).toBe(input);
   });
 
   it("doesn't re-escape an already-escaped sequence", () => {
     const input = '{"a": "one\\ntwo"}';
-    expect(escapeControlCharactersInStrings(input)).toBe(input);
+    expect(repairLlmJsonText(input)).toBe(input);
   });
 
   it("leaves a quote escaped inside a string alone (doesn't exit string state early)", () => {
     const input = '{"a": "she said \\"hi\\"\nnext line"}';
-    expect(escapeControlCharactersInStrings(input)).toBe(
-      '{"a": "she said \\"hi\\"\\nnext line"}',
-    );
+    expect(repairLlmJsonText(input)).toBe('{"a": "she said \\"hi\\"\\nnext line"}');
+  });
+
+  it("escapes a stray unescaped quote inside a string's content", () => {
+    const input = '{"a": "a "b" c"}';
+    expect(repairLlmJsonText(input)).toBe('{"a": "a \\"b\\" c"}');
+  });
+
+  it("still recognizes the real closing quote after a stray one", () => {
+    const input = '{"a": "a "b" c", "d": "e"}';
+    const result = JSON.parse(repairLlmJsonText(input));
+    expect(result).toEqual({ a: 'a "b" c', d: "e" });
   });
 });
