@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { repairLlmJsonText, parseAndValidateJson } from "@/lib/llm";
+import { describeBadStop, repairLlmJsonText, parseAndValidateJson } from "@/lib/llm";
 
 const schema = z.object({
   recommendations: z.array(z.object({ title: z.string(), reasoning: z.string() })),
@@ -118,5 +118,19 @@ describe("repairLlmJsonText", () => {
     const input = '{"a": "a "b" c", "d": "e"}';
     const result = JSON.parse(repairLlmJsonText(input));
     expect(result).toEqual({ a: 'a "b" c', d: "e" });
+  });
+});
+
+describe("describeBadStop", () => {
+  it("reports truncation clearly instead of letting it surface as a JSON parse error", () => {
+    expect(describeBadStop("max_tokens", 16000)).toContain("truncated at max_tokens (16000)");
+  });
+
+  it("reports refusals", () => {
+    expect(describeBadStop("refusal", 16000)).toContain("refusal");
+  });
+
+  it("returns null for normal completions", () => {
+    expect(describeBadStop("end_turn", 16000)).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { z } from "zod";
 
 const SLEEPER_BASE = "https://api.sleeper.app/v1";
@@ -138,9 +139,12 @@ export function getMatchups(leagueId: string, week: number) {
   );
 }
 
-export function getNflState() {
-  return sleeperFetch(`/state/nfl`, NflStateSchema);
-}
+/**
+ * Memoized per server request via React `cache()` — a single page render previously
+ * hit `/state/nfl` several times (dashboard week, recommendations filter, schedule).
+ * Outside a request (cron), `cache()` is a passthrough.
+ */
+export const getNflState = cache(() => sleeperFetch(`/state/nfl`, NflStateSchema));
 
 /** Transactions (trades, waivers, free-agent moves) for one week/round. */
 export function getTransactions(leagueId: string, round: number) {
@@ -190,6 +194,26 @@ export function resolveFantasyWeek(state: Pick<NflState, "week" | "season_type">
 export function resolveLastCompletedWeek(state: Pick<NflState, "week" | "season_type">): number {
   if (state.season_type === "pre" || state.season_type === "off") return 0;
   return Math.max(0, state.week - 1);
+}
+
+/**
+ * Which week's recommendations the dashboard should show. Prefers the current week,
+ * but if no analysis exists for it yet (week just rolled over, or that day's agent run
+ * failed) falls back to the most recent earlier week that has some — flagged so the
+ * UI can say "from Week N" instead of rendering an empty page, which is what made
+ * weeks look like they "didn't load."
+ */
+export function pickDisplayWeek(
+  currentWeek: number | null,
+  weeksWithRecommendations: number[],
+): { week: number | null; isFallback: boolean } {
+  if (currentWeek === null) return { week: null, isFallback: false };
+  if (weeksWithRecommendations.includes(currentWeek)) {
+    return { week: currentWeek, isFallback: false };
+  }
+  const earlier = weeksWithRecommendations.filter((w) => w < currentWeek);
+  if (earlier.length === 0) return { week: currentWeek, isFallback: false };
+  return { week: Math.max(...earlier), isFallback: true };
 }
 
 /** The fantasy week to use for recommendations/schedule/matchups — see `resolveFantasyWeek`. */

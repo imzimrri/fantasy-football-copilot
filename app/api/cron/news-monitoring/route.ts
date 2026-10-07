@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthorizedCronRequest } from "@/lib/cron-auth";
+import { recordAgentRun } from "@/lib/agent-runs";
 import { runNewsMonitoring } from "@/lib/agents/news-monitoring";
 
 export async function GET(request: NextRequest) {
@@ -7,7 +8,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await runNewsMonitoring();
+  const result = await recordAgentRun("news-monitoring", runNewsMonitoring);
   if (!result.ok) {
     console.error("[cron/news-monitoring]", result.error);
     return NextResponse.json({ ok: false, error: result.error }, { status: 500 });

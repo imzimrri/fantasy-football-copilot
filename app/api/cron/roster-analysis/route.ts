@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthorizedCronRequest } from "@/lib/cron-auth";
+import { recordAgentRun } from "@/lib/agent-runs";
 import { runRosterAnalysis } from "@/lib/agents/roster-analysis";
 
 export async function GET(request: NextRequest) {
@@ -7,7 +8,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await runRosterAnalysis();
+  const result = await recordAgentRun("roster-analysis", runRosterAnalysis);
   if (!result.ok) {
     console.error("[cron/roster-analysis]", result.error);
     return NextResponse.json({ ok: false, error: result.error }, { status: 500 });

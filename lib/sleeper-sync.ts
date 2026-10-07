@@ -19,7 +19,31 @@ export interface SyncSummary {
  * whole run — league/roster/player sync are the only hard-failure paths, per the
  * Integration Reliability NFR (degrade, don't crash the whole job).
  */
-export async function syncLeague(): Promise<Result<SyncSummary>> {
+export interface SyncOptions {
+  /**
+   * "full" (cron, daily): every player in Sleeper's database and every regular-season
+   * week. "current" (dashboard refresh button): only players on a league roster and
+   * only last/this week's matchups + transactions — the parts that actually change
+   * day to day, so a manual refresh takes seconds instead of re-writing ~10k player
+   * rows and 28 sequential week fetches.
+   */
+  scope?: "full" | "current";
+}
+
+/** Which weeks a sync should touch — pure, unit-tested. */
+export function weeksToSync(
+  scope: "full" | "current",
+  lastRegularSeasonWeek: number,
+  currentWeek: number | null,
+): number[] {
+  if (scope === "full" || currentWeek === null) {
+    return Array.from({ length: lastRegularSeasonWeek }, (_, i) => i + 1);
+  }
+  return [currentWeek - 1, currentWeek].filter((w) => w >= 1 && w <= lastRegularSeasonWeek);
+}
+
+export async function syncLeague(options: SyncOptions = {}): Promise<Result<SyncSummary>> {
+  const scope = options.scope ?? "full";
   const leagueId = process.env.SLEEPER_LEAGUE_ID;
   const username = process.env.SLEEPER_USERNAME;
   if (!leagueId || !username) {
@@ -121,10 +145,12 @@ export async function syncLeague(): Promise<Result<SyncSummary>> {
   if (!allPlayersResult.ok) {
     warnings.push(`Player sync skipped: ${allPlayersResult.error}`);
   } else {
+    const rosteredIds = new Set(rostersResult.data.flatMap((r) => r.players ?? []));
     const relevant = Object.entries(allPlayersResult.data).filter(
-      ([, p]) =>
+      ([id, p]) =>
         p.position &&
-        (sleeper.FANTASY_POSITIONS as readonly string[]).includes(p.position),
+        (sleeper.FANTASY_POSITIONS as readonly string[]).includes(p.position) &&
+        (scope === "full" || rosteredIds.has(id)),
     );
     const playerRows = relevant.map(([sleeperPlayerId, p]) => ({
       sleeper_player_id: sleeperPlayerId,
@@ -226,7 +252,14 @@ export async function syncLeague(): Promise<Result<SyncSummary>> {
   const lastRegularSeasonWeek =
     Number.isFinite(playoffWeekStart) && playoffWeekStart > 1 ? playoffWeekStart - 1 : 14;
 
-  for (let week = 1; week <= lastRegularSeasonWeek; week++) {
+  const currentWeekResult = await sleeper.getCurrentFantasyWeek();
+  const weeks = weeksToSync(
+    scope,
+    lastRegularSeasonWeek,
+    currentWeekResult.ok ? currentWeekResult.data : null,
+  );
+
+  for (const week of weeks) {
     const matchupsResult = await sleeper.getMatchups(leagueId, week);
     if (!matchupsResult.ok) {
       warnings.push(`Matchups for week ${week}: ${matchupsResult.error}`);
@@ -287,7 +320,7 @@ export async function syncLeague(): Promise<Result<SyncSummary>> {
   );
 
   if (ownSleeperRosterId !== undefined) {
-    for (let week = 1; week <= lastRegularSeasonWeek; week++) {
+    for (const week of weeks) {
       const transactionsResult = await sleeper.getTransactions(leagueId, week);
       if (!transactionsResult.ok) {
         warnings.push(`Transactions for week ${week}: ${transactionsResult.error}`);
