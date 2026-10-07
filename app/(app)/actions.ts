@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { createClient } from "@/lib/supabase/server";
 import { syncLeague } from "@/lib/sleeper-sync";
 import { loadAgentContext } from "@/lib/agents/shared";
 import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
@@ -21,7 +22,21 @@ import { runRosterAnalysis } from "@/lib/agents/roster-analysis";
  * refreshing after executing a suggested add/drop also clears it off the pending
  * waiver list, not just updates the roster.
  */
+/**
+ * Server Actions are public POST endpoints, and both actions here act on the app
+ * owner's league with the service-role client (bypassing RLS) and spend API credits.
+ * The proxy only proves *a* user is signed in — sign-up is open — so also require that
+ * the signed-in user IS the app owner.
+ */
+async function isAppOwner(): Promise<boolean> {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  const userId = data?.claims?.sub as string | undefined;
+  return !!userId && userId === process.env.FFC_USER_ID;
+}
+
 export async function refreshFromSleeper() {
+  if (!(await isAppOwner())) return { ok: false as const, error: "Not authorized" };
   const result = await syncLeague({ scope: "current" });
   if (!result.ok) return { ok: false as const, error: result.error };
 
@@ -63,6 +78,7 @@ export async function refreshFromSleeper() {
  * waiting until tomorrow. Recorded in `agent_runs` like a cron run.
  */
 export async function runAnalysisNow() {
+  if (!(await isAppOwner())) return { ok: false as const, error: "Not authorized" };
   const result = await recordAgentRun("roster-analysis", runRosterAnalysis);
   revalidatePath("/");
   if (!result.ok) return { ok: false as const, error: result.error };
