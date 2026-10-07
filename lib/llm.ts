@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { cacheKey, getCached, setCached } from "@/lib/cache";
 
@@ -38,30 +39,62 @@ function resolveProvider(requested?: LlmProvider): LlmProvider {
   );
 }
 
-async function callAnthropic(opts: GenerateOptions): Promise<Result<string>> {
+// Real bug, live for weeks: the old 2048 default truncated roster-analysis's JSON at
+// ~7,000 chars nearly every day ("Unterminated string in JSON at position 7101") —
+// which looked like a quoting bug but was the model simply being cut off mid-string.
+// Non-streaming requests stay comfortably under SDK timeouts at this size.
+const DEFAULT_MAX_TOKENS = 16000;
+
+/**
+ * Shared Anthropic client. Identity-linked (org/SSO-issued) API keys require the
+ * workspace header explicitly — the SDK does NOT auto-forward ANTHROPIC_WORKSPACE_ID
+ * as a request header for plain apiKey auth (that env var only feeds the separate WIF
+ * credential-exchange flow). Confirmed by testing directly against the API — see
+ * project_context.md.
+ */
+export function createAnthropicClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { ok: false, error: "ANTHROPIC_API_KEY is not set" };
+  if (!apiKey) return null;
+  const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
+  return new Anthropic({
+    apiKey,
+    ...(workspaceId && { defaultHeaders: { "anthropic-workspace-id": workspaceId } }),
+  });
+}
+
+function resolveAnthropicModel(requested?: string): string {
+  // `||` not `??` — an empty-string env var (e.g. `ANTHROPIC_MODEL=` left blank in
+  // .env.example) must fall through to the default, and `??` only catches
+  // null/undefined, not "".
+  return requested || process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
+}
+
+/**
+ * Turns a non-success stop_reason into a clear error instead of letting a truncated
+ * or refused response surface later as a confusing JSON parse failure.
+ */
+export function describeBadStop(stopReason: string | null, maxTokens: number): string | null {
+  if (stopReason === "max_tokens") {
+    return `LLM output truncated at max_tokens (${maxTokens}) — raise maxTokens for this call`;
+  }
+  if (stopReason === "refusal") return "LLM declined to answer this request (refusal)";
+  return null;
+}
+
+async function callAnthropic(opts: GenerateOptions): Promise<Result<string>> {
+  const client = createAnthropicClient();
+  if (!client) return { ok: false, error: "ANTHROPIC_API_KEY is not set" };
 
   try {
-    // Identity-linked (org/SSO-issued) API keys require this header explicitly — the
-    // SDK does NOT auto-forward ANTHROPIC_WORKSPACE_ID as a request header for plain
-    // apiKey auth (that env var only feeds the separate WIF credential-exchange flow).
-    // Confirmed by testing directly against the API — see project_context.md.
-    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
-    const client = new Anthropic({
-      apiKey,
-      ...(workspaceId && { defaultHeaders: { "anthropic-workspace-id": workspaceId } }),
-    });
-    // `||` not `??` — an empty-string env var (e.g. `ANTHROPIC_MODEL=` left blank in
-    // .env.example) must fall through to the default, and `??` only catches
-    // null/undefined, not "".
-    const model = opts.model || process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
+    const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
     const message = await client.messages.create({
-      model,
-      max_tokens: opts.maxTokens ?? 2048,
+      model: resolveAnthropicModel(opts.model),
+      max_tokens: maxTokens,
       system: opts.system,
       messages: [{ role: "user", content: opts.prompt }],
     });
+    const badStop = describeBadStop(message.stop_reason, maxTokens);
+    if (badStop) return { ok: false, error: badStop };
     const textBlock = message.content.find((block) => block.type === "text");
     if (!textBlock || textBlock.type !== "text") {
       // Real bug hit live: a large prompt (chat's roster+notes+waiver+news+research+
@@ -103,7 +136,7 @@ async function callOpenRouter(opts: GenerateOptions): Promise<Result<string>> {
     });
     const completion = await client.chat.completions.create({
       model,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
       messages: [
         { role: "system", content: opts.system },
         { role: "user", content: opts.prompt },
@@ -243,13 +276,70 @@ export function parseAndValidateJson<T>(
 }
 
 /**
- * Generate JSON matching `schema`. Instructs the model to return only JSON, then
- * validates the result — this is the mechanism behind every agent's structured
- * recommendation output (including the required `reasoning` field).
+ * Anthropic structured outputs: the API constrains decoding to the schema, so the
+ * response is always schema-shaped JSON — no prompt-begging for "ONLY valid JSON" and
+ * no text repair. Still re-validated with zod (the SDK strips constraints the API
+ * doesn't enforce, like `.min(1)`, and those must still hold).
+ */
+async function callAnthropicStructured<T>(
+  opts: GenerateOptions & { schema: z.ZodType<T> },
+): Promise<Result<T>> {
+  const client = createAnthropicClient();
+  if (!client) return { ok: false, error: "ANTHROPIC_API_KEY is not set" };
+
+  const model = resolveAnthropicModel(opts.model);
+  const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const key = cacheKey([
+    "llm-structured",
+    model,
+    String(maxTokens),
+    JSON.stringify(z.toJSONSchema(opts.schema, { unrepresentable: "any" })),
+    opts.system,
+    opts.prompt,
+  ]);
+  const cached = await getCached<T>(key, LLM_CACHE_TTL_MS);
+  if (cached !== null) return { ok: true, data: cached };
+
+  try {
+    const message = await client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      system: opts.system,
+      messages: [{ role: "user", content: opts.prompt }],
+      output_config: { format: zodOutputFormat(opts.schema) },
+    });
+    const badStop = describeBadStop(message.stop_reason, maxTokens);
+    if (badStop) return { ok: false, error: badStop };
+
+    const text = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+    const result = parseAndValidateJson(text, opts.schema);
+    if (result.ok) await setCached(key, result.data);
+    return result;
+  } catch (e) {
+    return { ok: false, error: `Anthropic call failed: ${String(e)}` };
+  }
+}
+
+/**
+ * Generate JSON matching `schema` — the mechanism behind every agent's structured
+ * recommendation output (including the required `reasoning` field). On Anthropic this
+ * uses native structured outputs; on OpenRouter it falls back to instructing the model
+ * to return only JSON, then repairing/validating the text.
  */
 export async function generateJSON<T>(
   opts: GenerateOptions & { schema: z.ZodType<T> },
 ): Promise<Result<T>> {
+  let provider: LlmProvider;
+  try {
+    provider = resolveProvider(opts.provider);
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+  if (provider === "anthropic") return callAnthropicStructured(opts);
+
   const jsonSystem =
     `${opts.system}\n\nRespond with ONLY valid JSON — no prose, no markdown code ` +
     `fences, no explanation outside the JSON structure. Inside every string value, " ` +

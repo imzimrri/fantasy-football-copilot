@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getLeague,
   getUserByUsername,
+  pickDisplayWeek,
   resolveFantasyWeek,
   resolveLastCompletedWeek,
 } from "@/lib/sleeper";
@@ -105,5 +106,27 @@ describe("resolveLastCompletedWeek", () => {
 
   it("never goes negative on week 1 of the regular season", () => {
     expect(resolveLastCompletedWeek({ week: 1, season_type: "regular" })).toBe(0);
+  });
+});
+
+describe("pickDisplayWeek", () => {
+  it("uses the current week when it has recommendations", () => {
+    expect(pickDisplayWeek(5, [3, 4, 5])).toEqual({ week: 5, isFallback: false });
+  });
+
+  it("falls back to the most recent earlier week when the current week has none", () => {
+    expect(pickDisplayWeek(6, [3, 5, 4])).toEqual({ week: 5, isFallback: true });
+  });
+
+  it("never falls forward to a later week", () => {
+    expect(pickDisplayWeek(2, [3])).toEqual({ week: 2, isFallback: false });
+  });
+
+  it("stays on the current week when nothing has been analyzed yet", () => {
+    expect(pickDisplayWeek(1, [])).toEqual({ week: 1, isFallback: false });
+  });
+
+  it("returns null when the current week is unknown", () => {
+    expect(pickDisplayWeek(null, [4])).toEqual({ week: null, isFallback: false });
   });
 });

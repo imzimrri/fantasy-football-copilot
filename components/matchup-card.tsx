@@ -78,7 +78,7 @@ export function MatchupCard({
         </div>
       ) : (
         <p className="text-sm text-foreground/50">
-          No outlook yet — run the roster-analysis cron job to generate one.
+          No outlook yet for this week — tap “Run analysis now” above to generate one.
         </p>
       )}
     </div>

@@ -4,14 +4,17 @@ import { revalidatePath } from "next/cache";
 import { syncLeague } from "@/lib/sleeper-sync";
 import { loadAgentContext } from "@/lib/agents/shared";
 import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
+import { recordAgentRun } from "@/lib/agent-runs";
+import { runRosterAnalysis } from "@/lib/agents/roster-analysis";
 
 /**
  * Manual "hard refresh" — pulls the latest roster/matchup/transaction state straight
  * from Sleeper, the same sync the cron job runs daily. For when the user just made a
  * real move in the Sleeper app and doesn't want to wait for the next scheduled sync to
- * see it reflected here. Runs the exact same `syncLeague()` the cron route calls, just
- * invoked directly instead of over HTTP — no need for the CRON_SECRET dance since this
- * only runs from a Server Action embedded in an already-authenticated page.
+ * see it reflected here. Runs the same `syncLeague()` the cron route calls, scoped to
+ * the current week so it finishes in seconds, and invoked directly instead of over
+ * HTTP — no need for the CRON_SECRET dance since this only runs from a Server Action
+ * embedded in an already-authenticated page.
  *
  * A real move also gets auto-matched against pending waiver recommendations during
  * sync (see `findMatchingWaiverRecommendation` in `lib/waiver-moves.ts`) — so
@@ -19,7 +22,7 @@ import { resolveStaleWaiverRecommendations } from "@/lib/waiver-moves";
  * waiver list, not just updates the roster.
  */
 export async function refreshFromSleeper() {
-  const result = await syncLeague();
+  const result = await syncLeague({ scope: "current" });
   if (!result.ok) return { ok: false as const, error: result.error };
 
   // Best-effort: clear any pending waiver recommendation for a player who's now
@@ -52,4 +55,16 @@ export async function refreshFromSleeper() {
       `${result.data.tradeCount} trades, ${result.data.moveCount} waiver/FA moves`,
     warnings: result.data.warnings,
   };
+}
+
+/**
+ * Manual "Run analysis now" — re-runs the start/sit + matchup agent on demand. Crons
+ * only fire once a day (Hobby plan), so without this a failed or stale run meant
+ * waiting until tomorrow. Recorded in `agent_runs` like a cron run.
+ */
+export async function runAnalysisNow() {
+  const result = await recordAgentRun("roster-analysis", runRosterAnalysis);
+  revalidatePath("/");
+  if (!result.ok) return { ok: false as const, error: result.error };
+  return { ok: true as const };
 }
