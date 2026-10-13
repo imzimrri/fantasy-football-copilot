@@ -243,20 +243,128 @@ export function parseAndValidateJson<T>(
 }
 
 /**
- * Generate JSON matching `schema`. Instructs the model to return only JSON, then
- * validates the result — this is the mechanism behind every agent's structured
- * recommendation output (including the required `reasoning` field).
+ * Generate JSON matching `schema` via Anthropic's forced tool-use, NOT by asking the
+ * model to type raw JSON text. This is the real fix for a class of bugs hit
+ * repeatedly in production: a model asked to hand-type JSON reliably gets a long,
+ * prose-heavy field wrong (an unescaped quote or a literal newline inside a string),
+ * which `repairLlmJsonText` could only ever patch reactively, one malformation shape
+ * at a time, and never fully close out. Tool-use sidesteps the whole class — the API
+ * constructs the arguments as real structured data via constrained decoding; it never
+ * hands back prose for us to re-parse, so there is no "typing JSON" step left to get
+ * wrong. `schema.safeParse` on the result is still a real safety net (shape/type
+ * correctness), just no longer a JSON-syntax one.
+ */
+async function callAnthropicStructured<T>(
+  opts: GenerateOptions & { schema: z.ZodType<T> },
+): Promise<Result<T>> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { ok: false, error: "ANTHROPIC_API_KEY is not set" };
+
+  const model = opts.model || process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
+  const key = cacheKey([
+    "llm-structured",
+    model,
+    String(opts.maxTokens ?? ""),
+    opts.system,
+    opts.prompt,
+  ]);
+  const cached = await getCached<unknown>(key, LLM_CACHE_TTL_MS);
+  if (cached !== null) {
+    // Only trust a cached value that still validates — never replay a bad cached
+    // result just because it's cheap.
+    const validatedCached = opts.schema.safeParse(cached);
+    if (validatedCached.success) return { ok: true, data: validatedCached.data };
+  }
+
+  try {
+    const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID;
+    const client = new Anthropic({
+      apiKey,
+      ...(workspaceId && { defaultHeaders: { "anthropic-workspace-id": workspaceId } }),
+    });
+
+    // z.toJSONSchema drops refinements (e.g. a `.superRefine` cross-field check) —
+    // those still apply below via `schema.safeParse`, same as before; only the
+    // structural shape needs to reach Anthropic as a tool input_schema. `$schema`
+    // is meaningless there, so it's stripped.
+    const jsonSchema = z.toJSONSchema(opts.schema) as Record<string, unknown>;
+    delete jsonSchema.$schema;
+
+    const message = await client.messages.create({
+      model,
+      max_tokens: opts.maxTokens ?? 2048,
+      system: opts.system,
+      messages: [{ role: "user", content: opts.prompt }],
+      tools: [
+        {
+          name: "submit_result",
+          description:
+            "Submit the structured result for this request. This is the only way to respond.",
+          // zod's JSON Schema output is structurally compatible with Anthropic's
+          // Tool.InputSchema but typed too loosely on both sides to line up without a
+          // cast.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          input_schema: jsonSchema as any,
+        },
+      ],
+      tool_choice: { type: "tool", name: "submit_result" },
+    });
+
+    const toolUseBlock = message.content.find((block) => block.type === "tool_use");
+    if (!toolUseBlock || toolUseBlock.type !== "tool_use") {
+      const blockTypes = message.content.map((block) => block.type).join(", ") || "none";
+      return {
+        ok: false,
+        error:
+          `Anthropic response contained no tool_use block (stop_reason: ${message.stop_reason}, ` +
+          `blocks: [${blockTypes}]) — likely maxTokens too low for this prompt/model`,
+      };
+    }
+
+    const validated = opts.schema.safeParse(toolUseBlock.input);
+    if (!validated.success) {
+      console.warn("[llm] schema validation failed on:", JSON.stringify(toolUseBlock.input, null, 2));
+      return {
+        ok: false,
+        error: `LLM JSON failed schema validation: ${validated.error.message}`,
+      };
+    }
+
+    await setCached(key, toolUseBlock.input);
+    return { ok: true, data: validated.data };
+  } catch (e) {
+    return { ok: false, error: `Anthropic call failed: ${String(e)}` };
+  }
+}
+
+/**
+ * Generate JSON matching `schema`. On Anthropic, uses forced tool-use so the API
+ * itself constructs valid structured output (see `callAnthropicStructured`) — no
+ * JSON-syntax repair needed. OpenRouter has no such path wired up yet, so it falls
+ * back to the older "ask the model to type raw JSON, then repair/validate it"
+ * approach, defensively patched by `repairLlmJsonText`.
  */
 export async function generateJSON<T>(
   opts: GenerateOptions & { schema: z.ZodType<T> },
 ): Promise<Result<T>> {
+  let provider: LlmProvider;
+  try {
+    provider = resolveProvider(opts.provider);
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+
+  if (provider === "anthropic") {
+    return callAnthropicStructured(opts);
+  }
+
   const jsonSystem =
     `${opts.system}\n\nRespond with ONLY valid JSON — no prose, no markdown code ` +
     `fences, no explanation outside the JSON structure. Inside every string value, " ` +
     `must be escaped as \\" and a real line break must be written as \\n — never a ` +
     `literal unescaped quote or newline character, even when quoting a word/stat or ` +
     `writing a multi-paragraph answer.`;
-  const textResult = await generateText({ ...opts, system: jsonSystem });
+  const textResult = await generateText({ ...opts, provider, system: jsonSystem });
   if (!textResult.ok) return textResult;
   return parseAndValidateJson(textResult.data, opts.schema);
 }
